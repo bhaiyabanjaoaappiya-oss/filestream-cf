@@ -1,5 +1,5 @@
-// FileStream-X v2.4 - Module Worker (ES Module) - worker.js
-// Replace CONFIG values before deploying
+// FileStream-X v2.4 - Module Worker (fixed CONFIG)
+// Replace BOT_SECRET if you want; regenerate BOT_TOKEN immediately if it was exposed.
 
 const CONFIG = {
   BOT_TOKEN: "8338576956:AAGHihYFp58QaKh8QpUSB8IbyCwfSG2s_Nc",
@@ -30,7 +30,7 @@ const ERR_408 = {ok:false,error_code:408,description:"Bad Request: mode not in [
 // volatile in-memory state
 const pendingUpdateByUser = {};
 
-// Embedded watch HTML (kept small)
+// Embedded watch HTML
 const WATCH_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Stream • File</title><link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>html,body{height:100%;margin:0;background:#070707;color:#fff;font-family:Inter,system-ui} .wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:22px}
