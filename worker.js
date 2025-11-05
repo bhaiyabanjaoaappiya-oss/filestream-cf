@@ -1,17 +1,14 @@
-// FileStream-X v2.4.1 - Module Worker (complete file)
-// ---------------------- CONFIG ----------------------
-const CONFIG = {
-  BOT_TOKEN: "8338576956:AAG2Faay8q4ymJpJhtSyQhLpVr-ETwj-jQU",            // e.g. 123:ABC...
-  BOT_SECRET: "myVerySecret123",      // choose a random string
-  BOT_OWNER: 7912527708,                              // your Telegram numeric ID
-  BOT_CHANNEL: -1003159694254,                       // channel id where files are saved
-  SIA_NUMBER: 654321,                                  // integer used for hashing
-  PUBLIC_BOT: false,                                 // true = anyone can use the bot
-  WORKER_DOMAIN: "filestream-v1.bhaiyabanjaoaappiya.workers.dev",   // your worker domain
-  MAX_EDGE_CACHE_SIZE: 200 * 1024 * 1024             // 200 MB - caching threshold
-};
+// FileStream-X v2.4.1 - Module Worker (ENV-backed, fixed full file)
+// -----------------------------------------------------------------
+// IMPORTANT: Put sensitive values in Wrangler secrets and not here:
+//   wrangler secret put BOT_TOKEN
+//   wrangler secret put BOT_SECRET
+//   wrangler secret put WORKER_DOMAIN
+// Optionally set BOT_OWNER, BOT_CHANNEL, SIA_NUMBER as secrets too.
+// -----------------------------------------------------------------
 
-// ---------------------- META -----------------------
+let GLOBAL_CONFIG = null; // will be set on each request from env
+
 const VERSION = "FileStream-X v2.4.1";
 const WHITE_METHODS = ["GET", "POST", "HEAD"];
 const HEADERS_FILE = {
@@ -30,7 +27,7 @@ const ERR_408 = { ok: false, error_code: 408, description: "Bad Request: mode no
 // volatile in-memory state (non-persistent)
 const pendingUpdateByUser = {};
 
-// --------------- Landing & Watch Pages ----------------
+// Landing & Watch HTML
 const LANDING_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>FileStream-X • Welcome</title><link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>body{margin:0;background:#070707;color:#eef;font-family:Inter,system-ui} .wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:28px}
@@ -74,8 +71,10 @@ function human(b){if(!b) return 'Unknown'; let n=Number(b); if(isNaN(n)) return 
 })();
 </script></body></html>`;
 
-// ------------------- Main module handler -------------------
+// ------------------- Main module handler (CONFIG from env) -------------------
 async function handleRequest(request, env, ctx) {
+  // GLOBAL_CONFIG must already be set by the export default.fetch wrapper
+  const CONFIG = GLOBAL_CONFIG;
   try {
     const url = new URL(request.url);
     const path = url.pathname;
@@ -85,7 +84,7 @@ async function handleRequest(request, env, ctx) {
       return new Response(LANDING_HTML, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } });
     }
 
-    // simple endpoints
+    // endpoints
     if (path === '/health') return new Response(JSON.stringify({ ok: true, version: VERSION }), { headers: HEADERS_ERRR });
     if (path === '/version') return new Response(JSON.stringify({ version: VERSION }), { headers: HEADERS_ERRR });
     if (path === '/watch' || path === '/watch.html') return new Response(WATCH_HTML, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', ...HEADERS_FILE } });
@@ -93,10 +92,9 @@ async function handleRequest(request, env, ctx) {
     // webhook
     if (path === '/endpoint') return await handleWebhookModule(request, env, ctx);
 
-    // file serving: requires file param
+    // file-serving: require file param
     const fileHash = url.searchParams.get('file');
     if (!fileHash) {
-      // show friendly hint instead of raw JSON 404
       const hintHtml = `<!doctype html><html><body style="font-family:system-ui,Inter,Arial;padding:28px;background:#070707;color:#fff">
         <h2>FileStream-X</h2><p>No file specified. Send a file to the bot in Telegram to generate a link, or use the <a href="/" style="color:#00f0e0">home page</a>.</p></body></html>`;
       return new Response(hintHtml, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } });
@@ -108,14 +106,17 @@ async function handleRequest(request, env, ctx) {
 
     try { atob(fileHash); } catch { return Raise(ERR_407, 404); }
     const file_path = atob(fileHash);
-    const channel_id = parseInt(file_path.split('/')[0]) / -CONFIG.SIA_NUMBER;
-    const message_id = parseInt(file_path.split('/')[1]) / CONFIG.SIA_NUMBER;
+    const parts = file_path.split('/');
+    if (parts.length < 2) return Raise(ERR_407, 404);
+    const channel_id = parseInt(parts[0], 10) / -CONFIG.SIA_NUMBER;
+    const message_id = parseInt(parts[1], 10) / CONFIG.SIA_NUMBER;
 
-    const retrieved = await RetrieveFile(channel_id, message_id);
-    if (retrieved.error_code) return Raise(retrieved, retrieved.error_code);
+    const retrieved = await RetrieveFile(channel_id, message_id); // returns [tgURL, name, size, mime] or error object
+    if (retrieved && retrieved.error_code) return Raise(retrieved, retrieved.error_code);
+
     const tgURL = retrieved[0], rname = retrieved[1], rsize = retrieved[2] || 0, rtype = retrieved[3] || 'application/octet-stream';
 
-    // HEAD handling
+    // HEAD
     if (request.method === 'HEAD') {
       try {
         const up = await fetch(tgURL, { method: 'HEAD' });
@@ -131,7 +132,7 @@ async function handleRequest(request, env, ctx) {
       }
     }
 
-    // Range support (proxy)
+    // Range
     const range = request.headers.get('Range');
     if (range) {
       const up = await fetch(tgURL, { method: 'GET', headers: { 'Range': range } });
@@ -142,7 +143,7 @@ async function handleRequest(request, env, ctx) {
       return new Response(up.body, { status: up.status, headers });
     }
 
-    // decide cache vs redirect
+    // cache vs redirect
     const maxCache = CONFIG.MAX_EDGE_CACHE_SIZE || 0;
     try {
       if (rsize > 0 && rsize <= maxCache && typeof caches !== 'undefined') {
@@ -161,10 +162,9 @@ async function handleRequest(request, env, ctx) {
         respHeaders.set('Content-Disposition', `${mode}; filename="${rname}"; filename*=UTF-8''${encodeURIComponent(rname)}`);
         respHeaders.set('Cache-Control', 'public, max-age=86400');
         const resp = new Response(upstream.body, { status: upstream.status, headers: respHeaders });
-        ctx.waitUntil((async () => { try { await cache.put(key, resp.clone()); } catch (err) {} })());
+        ctx.waitUntil((async () => { try { await cache.put(key, resp.clone()); } catch (err) { /* ignore */ } })());
         return resp;
       } else {
-        // redirect to Telegram CDN for fastest download and no worker egress
         return Response.redirect(tgURL, 302);
       }
     } catch (err) {
@@ -176,9 +176,11 @@ async function handleRequest(request, env, ctx) {
   }
 }
 
-// ---------------- Webhook module handler ----------------
+// ---------------- Webhook handler ----------------
 async function handleWebhookModule(request, env, ctx) {
-  if (request.headers.get('X-Telegram-Bot-Api-Secret-Token') !== CONFIG.BOT_SECRET) {
+  // verify header
+  const secret = request.headers.get('X-Telegram-Bot-Api-Secret-Token') || '';
+  if (!GLOBAL_CONFIG || secret !== String(GLOBAL_CONFIG.BOT_SECRET)) {
     return new Response('Unauthorized', { status: 403 });
   }
   const update = await request.json();
@@ -195,7 +197,7 @@ async function onUpdate(update, ctx) {
 
 // ---------------- RetrieveFile ----------------
 async function RetrieveFile(channel_id, message_id) {
-  // editMessageCaption trick to read message contents without changing storage
+  // read message by editing caption trick
   const data = await editMessage(channel_id, message_id, await UUID());
   if (data && data.error_code) return data;
   let fID, fName, fType, fSize;
@@ -206,21 +208,21 @@ async function RetrieveFile(channel_id, message_id) {
   else return ERR_406;
   const file = await getFile(fID);
   if (file && file.error_code) return file;
-  const tg = `https://api.telegram.org/file/bot${CONFIG.BOT_TOKEN}/${file.file_path}`;
+  const tg = `https://api.telegram.org/file/bot${GLOBAL_CONFIG.BOT_TOKEN}/${file.file_path}`;
   return [tg, fName, fSize, fType];
 }
 
 // ---------------- Inline / Callback / Message handlers ----------------
 async function onInline(inline) {
-  if (!CONFIG.PUBLIC_BOT && inline.from.id !== CONFIG.BOT_OWNER) {
+  if (!GLOBAL_CONFIG.PUBLIC_BOT && inline.from.id !== Number(GLOBAL_CONFIG.BOT_OWNER)) {
     return await answerInlineArticle(inline.id, "Access forbidden", "Access forbidden", "*❌ Access forbidden.*", []);
   }
   try { atob(inline.query); } catch { return await answerInlineArticle(inline.id, "Error", ERR_407.description, ERR_407.description, []); }
   const file_path = atob(inline.query);
-  const ch = parseInt(file_path.split('/')[0]) / -CONFIG.SIA_NUMBER;
-  const mid = parseInt(file_path.split('/')[1]) / CONFIG.SIA_NUMBER;
+  const ch = parseInt(file_path.split('/')[0]) / -GLOBAL_CONFIG.SIA_NUMBER;
+  const mid = parseInt(file_path.split('/')[1]) / GLOBAL_CONFIG.SIA_NUMBER;
   const data = await editMessage(ch, mid, await UUID());
-  if (data.error_code) return await answerInlineArticle(inline.id, "Error", data.description, data.description, []);
+  if (data && data.error_code) return await answerInlineArticle(inline.id, "Error", data.description || 'Error', data.description || 'Error', []);
   let fID, fName, fType;
   if (data.document) { fID = data.document.file_id; fName = data.document.file_name; fType = data.document.mime_type; }
   else if (data.video) { fID = data.video.file_id; fName = data.video.file_name; fType = data.video.mime_type; }
@@ -234,10 +236,10 @@ async function onCallback(callback) {
   const data = callback.data || '', from = callback.from.id, cbid = callback.id, chat_id = callback.message.chat.id, msg_id = callback.message.message_id;
   if (data === 'help') { await answerCallbackQuery(cbid, 'Opening help...'); await sendMessage(chat_id, msg_id, "📘 *Help*\n• Send a file to get links.\n• Use Update Channel (owner only) to change storage channel.", []); return; }
   if (data === 'about') { await answerCallbackQuery(cbid, 'About'); await sendMessage(chat_id, msg_id, `🤖 ${VERSION}\nUniversal Stream+Download Bot`, []); return; }
-  if (data === 'update_channel') { if (from !== CONFIG.BOT_OWNER) { await answerCallbackQuery(cbid, 'Only owner can update.'); return; } await answerCallbackQuery(cbid, 'Send the new channel id as a message in this chat.'); pendingUpdateByUser[from] = true; return; }
+  if (data === 'update_channel') { if (from !== Number(GLOBAL_CONFIG.BOT_OWNER)) { await answerCallbackQuery(cbid, 'Only owner can update.'); return; } await answerCallbackQuery(cbid, 'Send the new channel id as a message in this chat.'); pendingUpdateByUser[from] = true; return; }
 
   if (data.startsWith('delete_')) {
-    const hash = data.split('delete_')[1]; let pad = ''; while ((hash.length + pad.length) % 4) pad += '='; try { const dec = atob(hash + pad); const parts = dec.split('/'); const ch = parseInt(parts[0]) / -CONFIG.SIA_NUMBER; const mid = parseInt(parts[1]) / CONFIG.SIA_NUMBER; await fetch(apiUrl('deleteMessage', { chat_id: ch, message_id: mid })); await answerCallbackQuery(cbid, '🗑 File deleted'); } catch (e) { await answerCallbackQuery(cbid, 'Could not delete'); } return;
+    const hash = data.split('delete_')[1]; let pad = ''; while ((hash.length + pad.length) % 4) pad += '='; try { const dec = atob(hash + pad); const parts = dec.split('/'); const ch = parseInt(parts[0]) / -GLOBAL_CONFIG.SIA_NUMBER; const mid = parseInt(parts[1]) / GLOBAL_CONFIG.SIA_NUMBER; await fetch(apiUrl('deleteMessage', { chat_id: ch, message_id: mid })); await answerCallbackQuery(cbid, '🗑 File deleted'); } catch (e) { await answerCallbackQuery(cbid, 'Could not delete'); } return;
   }
   if (data.startsWith('close_')) { try { await fetch(apiUrl('deleteMessage', { chat_id: chat_id, message_id: msg_id })); } catch (e) { } await answerCallbackQuery(cbid, 'Closed'); return; }
   await answerCallbackQuery(cbid, 'Action not recognized');
@@ -247,7 +249,7 @@ async function onMessage(message) {
   // pending owner channel update
   if (message.from && pendingUpdateByUser[message.from.id]) {
     const txt = message.text || ''; const newId = parseInt(txt.replace(/\D/g, ''), 10);
-    if (!isNaN(newId)) { CONFIG.BOT_CHANNEL = newId; await sendMessage(message.chat.id, message.message_id, `✅ Channel updated to ${newId}`, []); } else { await sendMessage(message.chat.id, message.message_id, '❌ Invalid id. Send -1001234567890', []); }
+    if (!isNaN(newId)) { GLOBAL_CONFIG.BOT_CHANNEL = newId; await sendMessage(message.chat.id, message.message_id, `✅ Channel updated to ${newId}`, []); } else { await sendMessage(message.chat.id, message.message_id, '❌ Invalid id. Send -1001234567890', []); }
     delete pendingUpdateByUser[message.from.id]; return;
   }
 
@@ -264,7 +266,7 @@ async function onMessage(message) {
   }
 
   // access control
-  if (!CONFIG.PUBLIC_BOT && message.chat.id !== CONFIG.BOT_OWNER) {
+  if (!GLOBAL_CONFIG.PUBLIC_BOT && message.chat.id !== Number(GLOBAL_CONFIG.BOT_OWNER)) {
     return sendMessage(message.chat.id, message.message_id, "❌ Access forbidden. Contact owner for access.", []);
   }
 
@@ -275,15 +277,15 @@ async function onMessage(message) {
 
   // forward to channel
   let fID, fName, fSave;
-  if (message.document) { fID = message.document.file_id; fName = message.document.file_name; fSave = await sendDocument(CONFIG.BOT_CHANNEL, fID); }
-  else if (message.video) { fID = message.video.file_id; fName = message.video.file_name; fSave = await sendDocument(CONFIG.BOT_CHANNEL, fID); }
-  else if (message.audio) { fID = message.audio.file_id; fName = message.audio.file_name; fSave = await sendDocument(CONFIG.BOT_CHANNEL, fID); }
-  else if (message.photo) { fID = message.photo[message.photo.length - 1].file_id; fName = (message.photo[message.photo.length - 1].file_unique_id || fID) + '.jpg'; fSave = await sendPhoto(CONFIG.BOT_CHANNEL, fID); }
+  if (message.document) { fID = message.document.file_id; fName = message.document.file_name; fSave = await sendDocument(GLOBAL_CONFIG.BOT_CHANNEL, fID); }
+  else if (message.video) { fID = message.video.file_id; fName = message.video.file_name; fSave = await sendDocument(GLOBAL_CONFIG.BOT_CHANNEL, fID); }
+  else if (message.audio) { fID = message.audio.file_id; fName = message.audio.file_name; fSave = await sendDocument(GLOBAL_CONFIG.BOT_CHANNEL, fID); }
+  else if (message.photo) { fID = message.photo[message.photo.length - 1].file_id; fName = (message.photo[message.photo.length - 1].file_unique_id || fID) + '.jpg'; fSave = await sendPhoto(GLOBAL_CONFIG.BOT_CHANNEL, fID); }
 
   if (!fSave || fSave.error_code) return sendMessage(message.chat.id, message.message_id, 'Error saving file.', []);
 
-  const final_hash = (btoa(fSave.chat.id * -CONFIG.SIA_NUMBER + "/" + fSave.message_id * CONFIG.SIA_NUMBER)).replace(/=/g, '');
-  const origin = 'https://' + CONFIG.WORKER_DOMAIN;
+  const final_hash = (btoa(fSave.chat.id * -GLOBAL_CONFIG.SIA_NUMBER + "/" + fSave.message_id * GLOBAL_CONFIG.SIA_NUMBER)).replace(/=/g, '');
+  const origin = 'https://' + GLOBAL_CONFIG.WORKER_DOMAIN;
   const final_link = `${origin}/?file=${final_hash}`;
   const final_stre = `${origin}/watch?file=${final_hash}&name=${encodeURIComponent(fName)}&size=${fSave.document ? (fSave.document.file_size || 0) : (fSave.photo ? (fSave.photo[fSave.photo.length - 1].file_size || 0) : 0)}`;
   const final_tele = `https://t.me/${(await getMe()).username}/?start=${final_hash}`;
@@ -305,7 +307,7 @@ async function sendMessage(chat_id, reply_id, text, reply_markup = []) {
 async function sendDocument(chat_id, file_id) { const r = await fetch(apiUrl('sendDocument', { chat_id, document: file_id })); return (await r.json()).result; }
 async function sendPhoto(chat_id, file_id) { const r = await fetch(apiUrl('sendPhoto', { chat_id, photo: file_id })); return (await r.json()).result; }
 async function getFile(file_id) { const r = await fetch(apiUrl('getFile', { file_id })); return (await r.json()).result; }
-async function editMessage(chat_id, message_id, caption_text) { const r = await fetch(apiUrl('editMessageCaption', { chat_id, message_id, caption: caption_text })); return (await r.json()).result; }
+async function editMessage(chat_id, message_id, caption_text) { const r = await fetch(apiUrl('editMessageCaption', { chat_id: chat_id, message_id: message_id, caption: caption_text })); return (await r.json()).result; }
 async function answerCallbackQuery(callback_query_id, text = '') { const r = await fetch(apiUrl('answerCallbackQuery', { callback_query_id, text })); return (await r.json()); }
 async function answerInlineArticle(query_id, title, description, text, reply_markup = [], id = '1') {
   const data = [{ type: 'article', id, title, thumbnail_url: "https://i.ibb.co/5s8hhND/dac5fa134448.png", description, input_message_content: { message_text: text, parse_mode: 'markdown' }, reply_markup: { inline_keyboard: reply_markup } }];
@@ -317,16 +319,28 @@ async function answerInlineDocument(query_id, title, file_id, mime_type, reply_m
   const response = await fetch(apiUrl('answerInlineQuery', { inline_query_id: query_id, results: JSON.stringify(data), cache_time: 1 }));
   return (await response.json()).result;
 }
-function apiUrl(methodName, params = null) { let query = ''; if (params) query = '?' + new URLSearchParams(params).toString(); return `https://api.telegram.org/bot${CONFIG.BOT_TOKEN}/${methodName}${query}`; }
+function apiUrl(methodName, params = null) { let query = ''; if (params) query = '?' + new URLSearchParams(params).toString(); return `https://api.telegram.org/bot${GLOBAL_CONFIG.BOT_TOKEN}/${methodName}${query}`; }
 async function getMe() { const r = await fetch(apiUrl('getMe')); if (r.status == 200) return (await r.json()).result; else return (await r.json()); }
 
 // ---------------- Utilities ----------------
 async function Raise(json_error, status_code) { return new Response(JSON.stringify(json_error), { headers: HEADERS_ERRR, status: status_code }); }
 async function UUID() { return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) { var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8); return v.toString(16); }); }
 
-// ----------------- Export Module -----------------
+// ---------------- Export default (Module Worker) ----------------
 export default {
   async fetch(request, env, ctx) {
+    // Build GLOBAL_CONFIG from env (prefer secrets) with sane fallbacks
+    GLOBAL_CONFIG = {
+      BOT_TOKEN: env.BOT_TOKEN || "8338576956:AAG2Faay8q4ymJpJhtSyQhLpVr-ETwj-jQU",
+      BOT_SECRET: env.BOT_SECRET || "myVerySecret123",
+      BOT_OWNER: env.BOT_OWNER ? Number(env.BOT_OWNER) : 7912527708,
+      BOT_CHANNEL: env.BOT_CHANNEL ? Number(env.BOT_CHANNEL) : -1003159694254,
+      SIA_NUMBER: env.SIA_NUMBER ? Number(env.SIA_NUMBER) : 1234,
+      PUBLIC_BOT: env.PUBLIC_BOT ? (String(env.PUBLIC_BOT) === 'true') : false,
+      WORKER_DOMAIN: env.WORKER_DOMAIN || "filestream-v1.bhaiyabanjaoaappiya.workers.dev",
+      MAX_EDGE_CACHE_SIZE: env.MAX_EDGE_CACHE_SIZE ? Number(env.MAX_EDGE_CACHE_SIZE) : 200 * 1024 * 1024
+    };
+
     return await handleRequest(request, env, ctx);
   }
 };
