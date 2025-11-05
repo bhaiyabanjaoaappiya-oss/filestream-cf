@@ -2,7 +2,7 @@
 // ---------------------- CONFIG ----------------------
 const CONFIG = {
   BOT_TOKEN: "8338576956:AAG2Faay8q4ymJpJhtSyQhLpVr-ETwj-jQU",            // e.g. 123:ABC...
-  BOT_SECRET: "BOT_SECRET",      // choose a random string
+  BOT_SECRET: "myVerySecret123",      // choose a random string
   BOT_OWNER: 7912527708,                              // your Telegram numeric ID
   BOT_CHANNEL: -1003159694254,                       // channel id where files are saved
   SIA_NUMBER: 654321,                                  // integer used for hashing
