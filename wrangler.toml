@@ -1,0 +1,4 @@
+name = "filestream-v1"
+main = "worker.js"
+compatibility_date = "2025-05-29"
+compatibility_flags = ["nodejs_compat"]
