@@ -1,8 +1,8 @@
-// FileStream-X v2.4 - Module Worker (fixed CONFIG)
-// Replace BOT_SECRET if you want; regenerate BOT_TOKEN immediately if it was exposed.
+// FileStream-X v2.4.1 - Module Worker (landing page + fallback)
+// Replace CONFIG values (BOT_TOKEN etc.) before deploying
 
 const CONFIG = {
-  BOT_TOKEN: "8338576956:AAGHihYFp58QaKh8QpUSB8IbyCwfSG2s_Nc",
+  BOT_TOKEN: "8338576956:AAG2Faay8q4ymJpJhtSyQhLpVr-ETwj-jQU",
   BOT_SECRET: "BOT_SECRET",
   BOT_OWNER: 7912527708,
   BOT_CHANNEL: -1003159694254,
@@ -12,7 +12,7 @@ const CONFIG = {
   MAX_EDGE_CACHE_SIZE: 200 * 1024 * 1024 // 200 MB
 };
 
-const VERSION = "FileStream-X v2.4";
+const VERSION = "FileStream-X v2.4.1";
 const WHITE_METHODS = ["GET","POST","HEAD"];
 const HEADERS_FILE = {
   "Access-Control-Allow-Origin":"*",
@@ -30,9 +30,35 @@ const ERR_408 = {ok:false,error_code:408,description:"Bad Request: mode not in [
 // volatile in-memory state
 const pendingUpdateByUser = {};
 
-// Embedded watch HTML
-const WATCH_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Stream • File</title><link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+// Landing HTML (root) — simple friendly page
+const LANDING_HTML = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>FileStream-X • Welcome</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>
+  body{margin:0;background:#070707;color:#eef;font-family:Inter,system-ui;-webkit-font-smoothing:antialiased}
+  .wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:28px}
+  .card{max-width:880px;width:100%;background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0.01));border-radius:12px;padding:26px;text-align:center;box-shadow:0 8px 30px rgba(0,0,0,0.6)}
+  h1{color:#00f0e0;margin:0 0 6px;font-size:22px}
+  p{color:#bfc5c9;margin:10px 0 18px}
+  .btn{display:inline-block;padding:10px 18px;border-radius:10px;background:#00f0e0;color:#012;font-weight:700;text-decoration:none}
+  .small{font-size:13px;color:#9aa3a7;margin-top:12px}
+</style>
+</head><body>
+  <div class="wrap">
+    <div class="card">
+      <h1>FileStream-X</h1>
+      <p>Convert any Telegram file to a fast download or stream link.<br/>Works on all browsers & devices.</p>
+      <a class="btn" href="/watch">Open Stream Page</a>
+      <div class="small">Usage: Send a file to the bot in Telegram, then open the generated link here.<br/>Version: ${VERSION}</div>
+    </div>
+  </div>
+</body></html>`;
+
+// Embedded watch page (kept same as before)
+const WATCH_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/><title>Stream • File</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>html,body{height:100%;margin:0;background:#070707;color:#fff;font-family:Inter,system-ui} .wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:22px}
 .card{max-width:880px;width:100%;background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0.01));border-radius:14px;padding:20px;text-align:center}
 .title{color:#00f0e0;font-weight:700;margin-bottom:6px} .fname{font-weight:700;color:#00e6d9;margin-bottom:8px;word-break:break-word}
@@ -75,6 +101,11 @@ async function handleRequest(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname;
 
+    // landing page at root
+    if (path === '/' || path === '') {
+      return new Response(LANDING_HTML, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } });
+    }
+
     // endpoints
     if (path === '/health') return new Response(JSON.stringify({ok:true,version:VERSION}), {headers:HEADERS_ERRR});
     if (path === '/version') return new Response(JSON.stringify({version:VERSION}), {headers:HEADERS_ERRR});
@@ -83,9 +114,15 @@ async function handleRequest(request, env, ctx) {
     // webhook
     if (path === '/endpoint') return await handleWebhookModule(request, env, ctx);
 
-    // file serving
+    // file serving: require file param
     const fileHash = url.searchParams.get('file');
-    if (!fileHash) return Raise(ERR_404, 404);
+    if (!fileHash) {
+      // no file param -> show friendly HTML page (not JSON 404)
+      const hintHtml = `<!doctype html><html><body style="font-family:system-ui,Inter,Arial;padding:28px;background:#070707;color:#fff">
+        <h2>FileStream-X</h2><p>No file specified. Send a file to the bot in Telegram to generate a link, or use the <a href="/" style="color:#00f0e0">home page</a>.</p></body></html>`;
+      return new Response(hintHtml, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } });
+    }
+
     const mode = url.searchParams.get('mode') || 'attachment';
     if (!['attachment','inline'].includes(mode)) return Raise(ERR_408, 404);
     if (!WHITE_METHODS.includes(request.method)) return Raise(ERR_405, 405);
@@ -99,7 +136,7 @@ async function handleRequest(request, env, ctx) {
     if (retrieved.error_code) return Raise(retrieved, retrieved.error_code);
     const tgURL = retrieved[0], rname = retrieved[1], rsize = retrieved[2] || 0, rtype = retrieved[3] || 'application/octet-stream';
 
-    // HEAD
+    // HEAD handling
     if (request.method === 'HEAD') {
       try {
         const up = await fetch(tgURL, { method: 'HEAD' });
@@ -115,7 +152,7 @@ async function handleRequest(request, env, ctx) {
       }
     }
 
-    // Range
+    // Range support
     const range = request.headers.get('Range');
     if (range) {
       const up = await fetch(tgURL, { method: 'GET', headers: { 'Range': range } });
@@ -145,9 +182,7 @@ async function handleRequest(request, env, ctx) {
         respHeaders.set('Content-Disposition', `${mode}; filename="${rname}"; filename*=UTF-8''${encodeURIComponent(rname)}`);
         respHeaders.set('Cache-Control','public, max-age=86400');
         const resp = new Response(upstream.body, { status: upstream.status, headers: respHeaders });
-        ctx.waitUntil((async () => {
-          try { await cache.put(key, resp.clone()); } catch (err) {}
-        })());
+        ctx.waitUntil((async () => { try { await cache.put(key, resp.clone()); } catch (err) {} })());
         return resp;
       } else {
         return Response.redirect(tgURL, 302);
@@ -163,12 +198,10 @@ async function handleRequest(request, env, ctx) {
 
 // ----------------- Webhook module handler -----------------
 async function handleWebhookModule(request, env, ctx) {
-  // validate secret token
   if (request.headers.get('X-Telegram-Bot-Api-Secret-Token') !== CONFIG.BOT_SECRET) {
     return new Response('Unauthorized', { status: 403 });
   }
   const update = await request.json();
-  // use ctx.waitUntil for background processing
   ctx.waitUntil(onUpdate(update, ctx));
   return new Response('OK');
 }
@@ -196,7 +229,7 @@ async function RetrieveFile(channel_id, message_id) {
   return [tg, fName, fSize, fType];
 }
 
-// ----------------- inline / callback / message handlers -----------------
+// ----------------- Inline / Callback / Message handlers -----------------
 async function onInline(inline) {
   if (!CONFIG.PUBLIC_BOT && inline.from.id !== CONFIG.BOT_OWNER) {
     return await answerInlineArticle(inline.id, "Access forbidden", "Access forbidden", "*❌ Access forbidden.*", []);
@@ -221,7 +254,6 @@ async function onCallback(callback) {
   if (data === 'help') { await answerCallbackQuery(cbid,'Opening help...'); await sendMessage(chat_id,msg_id,"📘 *Help*\n• Send a file to get links.\n• Use Update Channel (owner only) to change storage channel.",[]); return; }
   if (data === 'about') { await answerCallbackQuery(cbid,'About'); await sendMessage(chat_id,msg_id,`🤖 ${VERSION}\nUniversal Stream+Download Bot`,[]); return; }
   if (data === 'update_channel') { if (from !== CONFIG.BOT_OWNER) { await answerCallbackQuery(cbid,'Only owner can update.'); return; } await answerCallbackQuery(cbid,'Send the new channel id as a message in this chat.'); pendingUpdateByUser[from] = true; return; }
-
   if (data.startsWith('delete_')) {
     const hash = data.split('delete_')[1]; let pad=''; while ((hash.length + pad.length) % 4) pad += '='; try { const dec = atob(hash + pad); const parts = dec.split('/'); const ch = parseInt(parts[0]) / -CONFIG.SIA_NUMBER; const mid = parseInt(parts[1]) / CONFIG.SIA_NUMBER; await fetch(apiUrl('deleteMessage',{chat_id:ch,message_id:mid})); await answerCallbackQuery(cbid,'🗑 File deleted'); } catch (e) { await answerCallbackQuery(cbid,'Could not delete'); } return;
   }
@@ -259,7 +291,7 @@ async function onMessage(message) {
     return sendMessage(message.chat.id,message.message_id,"Send any file/video/audio/photo (<=4GB).",[]);
   }
 
-  // forward
+  // forward to channel
   let fID,fName,fSave;
   if (message.document) { fID = message.document.file_id; fName = message.document.file_name; fSave = await sendDocument(CONFIG.BOT_CHANNEL, fID); }
   else if (message.video) { fID = message.video.file_id; fName = message.video.file_name; fSave = await sendDocument(CONFIG.BOT_CHANNEL, fID); }
@@ -294,17 +326,4 @@ async function getFile(file_id) { const r = await fetch(apiUrl('getFile', { file
 async function editMessage(chat_id, message_id, caption_text) { const r = await fetch(apiUrl('editMessageCaption', { chat_id, message_id, caption: caption_text })); return (await r.json()).result; }
 async function answerCallbackQuery(callback_query_id, text = '') { const r = await fetch(apiUrl('answerCallbackQuery', { callback_query_id, text })); return (await r.json()); }
 async function answerInlineArticle(query_id, title, description, text, reply_markup = [], id = '1') { const data = [{ type: 'article', id, title, thumbnail_url: "https://i.ibb.co/5s8hhND/dac5fa134448.png", description, input_message_content: { message_text: text, parse_mode: 'markdown' }, reply_markup: { inline_keyboard: reply_markup } }]; const response = await fetch(apiUrl('answerInlineQuery', { inline_query_id: query_id, results: JSON.stringify(data), cache_time: 1 })); return (await response.json()).result; }
-async function answerInlineDocument(query_id, title, file_id, mime_type, reply_markup = [], id = '1') { const data = [{ type: 'document', id, title, document_file_id: file_id, mime_type, description: mime_type, reply_markup: { inline_keyboard: reply_markup } }]; const response = await fetch(apiUrl('answerInlineQuery', { inline_query_id: query_id, results: JSON.stringify(data), cache_time: 1 })); return (await response.json()).result; }
-function apiUrl(methodName, params = null) { let query = ''; if (params) query = '?' + new URLSearchParams(params).toString(); return `https://api.telegram.org/bot${CONFIG.BOT_TOKEN}/${methodName}${query}`; }
-async function getMe() { const r = await fetch(apiUrl('getMe')); if (r.status == 200) return (await r.json()).result; else return (await r.json()); }
-
-// ----------------- util -----------------
-async function Raise(json_error, status_code) { return new Response(JSON.stringify(json_error), { headers: HEADERS_ERRR, status: status_code }); }
-async function UUID() { return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c){ var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8); return v.toString(16); }); }
-
-// ----------------- export default (Module Worker) -----------------
-export default {
-  async fetch(request, env, ctx) {
-    return await handleRequest(request, env, ctx);
-  }
-};
+async function answerInlineDocument(query_id, title, file_id, mime_type, reply_markup = [], id = '1') { const data = [{ type: 'document', id, title, document_file_id: file_id, mime_type, description: mime_type, reply_markup: { inline_keyboard: reply_markup } }]; const response = await fetch(apiUrl('answerInlineQuery', { inline_query_id: query_id, results: JSON.stringify(data), cache_time: 1 })); return (await r
