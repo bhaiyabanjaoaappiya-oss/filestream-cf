@@ -6,9 +6,9 @@ const CONFIG = {
   BOT_SECRET: "BOT_SECRET",
   BOT_OWNER: 7912527708,
   BOT_CHANNEL: -1003159694254,
-  SIA_NUMBER: 1234554,
+  SIA_NUMBER: 1234,
   PUBLIC_BOT: false,
-  WORKER_DOMAIN: "your-worker-domain",
+  WORKER_DOMAIN: "filestream-v1.bhaiyabanjaoaappiya.workers.dev",
   MAX_EDGE_CACHE_SIZE: 200 * 1024 * 1024 // 200 MB
 };
 
